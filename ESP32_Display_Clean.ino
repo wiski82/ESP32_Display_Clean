@@ -5,15 +5,41 @@
 TFT_eSPI tft;
 
 #define SD_CS 5
-const char* RAW_FILE = "/page1.raw";
+
+const char* pages[] = {
+  "/page1.raw",
+  "/page2.raw",
+  "/page3.raw"
+};
 
 static const int WIDTH  = 240;
 static const int HEIGHT = 320;
 
+int currentPage = 0;
+unsigned long lastSwitch = 0;
+const unsigned long interval = 5000; // 5 Sekunden
+
+void drawRaw(const char* filename) {
+  File file = SD.open(filename, FILE_READ);
+  if (!file) {
+    Serial.println("FILE FAIL");
+    return;
+  }
+
+  static uint16_t lineBuffer[WIDTH];
+
+  for (int y = 0; y < HEIGHT; y++) {
+    int bytesRead = file.read((uint8_t*)lineBuffer, WIDTH * 2);
+    if (bytesRead != WIDTH * 2) break;
+    tft.pushImage(0, y, WIDTH, 1, lineBuffer);
+  }
+
+  file.close();
+}
+
 void setup() {
   Serial.begin(115200);
 
-  // Backlight einschalten
   pinMode(21, OUTPUT);
   digitalWrite(21, HIGH);
 
@@ -21,53 +47,26 @@ void setup() {
   tft.setRotation(0);
   tft.fillScreen(TFT_BLACK);
 
-  tft.setTextFont(2);
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.setCursor(10, 10);
-  tft.println("RAW TEST...");
-
-  // SD starten
   if (!SD.begin(SD_CS)) {
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.setCursor(10, 40);
-    tft.println("SD FAIL");
     Serial.println("SD FAIL");
     return;
   }
 
-  // Datei öffnen
-  File file = SD.open(RAW_FILE, FILE_READ);
-  if (!file) {
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.setCursor(10, 40);
-    tft.println("FILE FAIL");
-    Serial.println("FILE FAIL");
-    return;
-  }
-
-  Serial.print("File size: ");
-  Serial.println(file.size());
-
-  if (file.size() != WIDTH * HEIGHT * 2) {
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.setCursor(10, 40);
-    tft.println("SIZE WARN");
-  }
-
-  static uint16_t lineBuffer[WIDTH];
-
-  for (int y = 0; y < HEIGHT; y++) {
-    int bytesRead = file.read((uint8_t*)lineBuffer, WIDTH * 2);
-    if (bytesRead != WIDTH * 2) {
-      Serial.println("Read error!");
-      break;
-    }
-    tft.pushImage(0, y, WIDTH, 1, lineBuffer);
-  }
-
-  file.close();
-  Serial.println("RAW DRAW DONE");
+  drawRaw(pages[currentPage]);
+  lastSwitch = millis();
 }
 
-void loop() {}
+void loop() {
+  if (millis() - lastSwitch > interval) {
+    currentPage++;
+    if (currentPage > 2) currentPage = 0;
+
+    drawRaw(pages[currentPage]);
+    lastSwitch = millis();
+
+    Serial.print("Page: ");
+    Serial.println(currentPage + 1);
+  }
+}
+
 
