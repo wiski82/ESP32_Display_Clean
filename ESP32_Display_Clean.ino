@@ -1,7 +1,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-
+#include <DHT.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>
 #include <SD.h>
@@ -19,6 +19,15 @@ const char* mqtt_pass   = "";
 
 // Topics
 const char* TOPIC_UI = "display/ui";
+
+// Innen-Sensor (DHT11 am Display)
+#define DHTPIN  27
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+const char* TOPIC_INSIDE_STATE = "innen/sensor/state";
+uint32_t lastInsidePub = 0;
+
 
 // =====================
 // CYD Pins
@@ -71,6 +80,31 @@ struct UIData {
 
 // caches (nur neu zeichnen wenn geändert)
 String c_time, c_weekday, c_date, c_bdayToday, c_bdayNextName, c_bdayNextDate;
+
+// =====================
+// PAGE 2 Data (Wetter)
+// =====================
+struct Page2Data {
+  float outT = NAN;
+  int   outH = -1;
+
+  float netT = NAN;
+  String netCond = "unknown";
+
+  struct FcItem {
+    String d = "--";     // "Mo"
+    int hi = 0;
+    int lo = 0;
+    String cond = "unknown";
+  } fc[5];
+} p2;
+
+// Caches Page2 (nur neu zeichnen wenn geändert)
+float  c_inT = NAN; int c_inH = -1;
+float  c_outT = NAN; int c_outH = -1;
+float  c_netT = NAN; String c_netCond = "";
+String c_fcSig = "";
+
 
 // =====================
 // Helpers
@@ -147,6 +181,31 @@ inline void restoreBg(int x,int y,int w,int h){
     tft.fillRect(x, y, w, h, TFT_BLACK);
   }
 }
+void publishInsideIfDue() {
+  const uint32_t interval = 60000; // 60 Sekunden
+  if (millis() - lastInsidePub < interval) return;
+  lastInsidePub = millis();
+
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+
+  if (isnan(t) || isnan(h)) {
+    Serial.println("[DHT] read failed (inside)");
+    return;
+  }
+
+  StaticJsonDocument<128> j;
+  j["temperature"] = t;
+  j["humidity"] = h;
+
+  char out[128];
+  size_t n = serializeJson(j, out, sizeof(out));
+
+  bool ok = client.publish(TOPIC_INSIDE_STATE, (const uint8_t*)out, n, false);
+
+  Serial.printf("[MQTT] publish inside %s -> %s\n", ok ? "OK" : "FAIL", out);
+}
+
 
 // =====================
 // MQTT parse
@@ -167,15 +226,59 @@ void parseUI(JsonDocument& doc){
     if (n.containsKey("name")) ui.bdayNextName = safe(String((const char*)n["name"]), "-");
     if (n.containsKey("date")) ui.bdayNextDate = safe(String((const char*)n["date"]), "-");
   }
+  if (o.containsKey("page2") && o["page2"].is<JsonObject>()) {
+    parsePage2(o["page2"].as<JsonObject>());
+  }
+}
+
+void parsePage2(JsonObject p){
+  // outside
+  if (p.containsKey("outside") && p["outside"].is<JsonObject>()) {
+    JsonObject o = p["outside"].as<JsonObject>();
+    if (o.containsKey("t")) p2.outT = o["t"].as<float>();
+    if (o.containsKey("h")) p2.outH = o["h"].as<int>();
+  }
+
+  // net
+  if (p.containsKey("net") && p["net"].is<JsonObject>()) {
+    JsonObject n = p["net"].as<JsonObject>();
+    if (n.containsKey("t") && !n["t"].isNull()) p2.netT = n["t"].as<float>();
+    if (n.containsKey("cond")) p2.netCond = safe(String((const char*)n["cond"]), "unknown");
+  }
+
+  // forecast (5 Tage)
+  if (p.containsKey("fc") && p["fc"].is<JsonArray>()) {
+    JsonArray a = p["fc"].as<JsonArray>();
+    for (int i=0;i<5;i++){
+      if (i < (int)a.size() && a[i].is<JsonObject>()) {
+        JsonObject it = a[i].as<JsonObject>();
+        if (it.containsKey("d"))    p2.fc[i].d = safe(String((const char*)it["d"]), "--");
+        if (it.containsKey("hi"))   p2.fc[i].hi = it["hi"].as<int>();
+        if (it.containsKey("lo"))   p2.fc[i].lo = it["lo"].as<int>();
+        if (it.containsKey("cond")) p2.fc[i].cond = safe(String((const char*)it["cond"]), "unknown");
+      } else {
+        p2.fc[i] = Page2Data::FcItem(); // reset
+      }
+    }
+  }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length){
+  Serial.println("=== MQTT MESSAGE RECEIVED ===");
+  Serial.printf("Topic: %s\n", topic);
+  Serial.printf("Length: %u\n", length);
+  Serial.print("Payload: ");
+for (unsigned int i = 0; i < length; i++) {
+  Serial.print((char)payload[i]);
+}
+Serial.println();
+
   String t(topic);
   String msg; msg.reserve(length+1);
   for(unsigned int i=0;i<length;i++) msg += (char)payload[i];
 
-  StaticJsonDocument<1024> doc;
-  DeserializationError err = deserializeJson(doc, msg);
+  StaticJsonDocument<8192> doc;
+  DeserializationError err = deserializeJson(doc, payload, length);
   if (err) {
     Serial.printf("[JSON] FAIL topic=%s err=%s\n", topic, err.c_str());
     return;
@@ -228,6 +331,11 @@ void mqttReconnect(){
 void resetCaches(){
   c_time=""; c_weekday=""; c_date="";
   c_bdayToday=""; c_bdayNextName=""; c_bdayNextDate="";
+
+  c_inT = NAN; c_inH = -1;
+  c_outT = NAN; c_outH = -1;
+  c_netT = NAN; c_netCond = "";
+  c_fcSig = "";
 }
 
 void showPage(Page p){
@@ -315,12 +423,103 @@ void overlayPage1(){
   }
 }
 
+void overlayPage2(){
+
+  float inT = dht.readTemperature();
+  float inHf = dht.readHumidity();
+  int inH = isnan(inHf) ? -1 : (int)round(inHf);
+
+  float outT = p2.outT;
+  int   outH = p2.outH;
+
+  float netT = p2.netT;
+  String netCond = p2.netCond;
+
+  // ===== TOP BEREICH =====
+  bool needTop = false;
+
+  if (!isnan(inT) && (isnan(c_inT) || fabs(inT-c_inT) > 0.1)) needTop = true;
+  if (inH != c_inH) needTop = true;
+  if (!isnan(outT) && (isnan(c_outT) || fabs(outT-c_outT) > 0.1)) needTop = true;
+  if (outH != c_outH) needTop = true;
+
+  if (needTop){
+    restoreBg(0, 0, 240, 100);
+
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(TFT_WHITE);
+
+    tft.drawString("Innen", 10, 10);
+    tft.drawLine(10, 28, 100, 28, TFT_DARKGREY);
+
+    tft.setTextFont(4);
+    if (!isnan(inT))
+      tft.drawString(String((int)round(inT)) + "°C", 10, 35);
+
+    if (inH >= 0)
+      tft.drawString(String(inH) + "%", 10, 65);
+
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextFont(2);
+    tft.drawString("Aussen", 230, 10);
+    tft.drawLine(140, 28, 230, 28, TFT_DARKGREY);
+
+    tft.setTextFont(4);
+    if (!isnan(outT))
+      tft.drawString(String((int)round(outT)) + "°C", 230, 35);
+
+    if (outH >= 0)
+      tft.drawString(String(outH) + "%", 230, 65);
+
+    c_inT = inT; 
+    c_inH = inH;
+    c_outT = outT; 
+    c_outH = outH;
+  }
+
+  // ===== MITTE =====
+  bool needMid = false;
+
+  if (!isnan(netT) && (isnan(c_netT) || fabs(netT-c_netT) > 0.1)) needMid = true;
+  if (netCond != c_netCond) needMid = true;
+
+  if (needMid){
+    restoreBg(0, 100, 240, 110);
+
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextFont(7);
+    tft.setTextColor(TFT_WHITE);
+
+    if (!isnan(netT))
+      tft.drawString(String((int)round(netT)) + "°C", 120, 150);
+
+    tft.setTextFont(4);
+
+    String label =
+      (netCond=="sunny") ? "Sonnig" :
+      (netCond=="cloudy") ? "Wolkig" :
+      (netCond=="rain") ? "Regen" :
+      (netCond=="snow") ? "Schnee" :
+      "-";
+
+    tft.drawString(label, 120, 190);
+
+    c_netT = netT;
+    c_netCond = netCond;
+  }
+}
+
+
 // =====================
 // Setup / Loop
 // =====================
 void setup() {
   Serial.begin(115200);
   delay(200);
+  dht.begin();
+  Serial.println("[DHT] begin ok (GPIO27, DHT11)");
+
 
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
@@ -347,7 +546,7 @@ void setup() {
 
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(mqttCallback);
-  client.setBufferSize(1024);
+  client.setBufferSize(4096);
 
   mqttReconnect();
 
@@ -361,6 +560,8 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED) setup_wifi();
   if (!client.connected()) mqttReconnect();
   client.loop();
+  publishInsideIfDue();
+
 
   // Page switch
   if (millis() - lastPageSwitch > PAGE_SWITCH_MS) {
@@ -373,6 +574,7 @@ void loop() {
   if (millis() - lastOverlayTick > OVERLAY_TICK_MS) {
     lastOverlayTick = millis();
     if (currentPage==PAGE1) overlayPage1();
+    if (currentPage==PAGE2) overlayPage2();
     // PAGE2 / PAGE3 Overlays kommen als nächste Steps
   }
 }
