@@ -104,6 +104,15 @@ float  c_inT = NAN; int c_inH = -1;
 float  c_outT = NAN; int c_outH = -1;
 float  c_netT = NAN; String c_netCond = "";
 String c_fcSig = "";
+// Für flackerfreie Anzeige: wir vergleichen gerundete Werte
+int c_inTi  = 9999;
+int c_outTi = 9999;
+int c_netTi = 9999;
+
+// Live Innenwerte (DHT) nur selten aktualisieren (gegen Flackern)
+float liveInT = NAN;
+int   liveInH = -1;
+uint32_t lastDhtRead = 0;
 
 
 // =====================
@@ -391,43 +400,60 @@ void overlayPage1(){
     c_date = date;
   }
 
-  // ---- Geburtstagsbox unten (Heute + Nächster)
-  if (today != c_bdayToday || nextN != c_bdayNextName || nextD != c_bdayNextDate) {
-    int x=10, y=232, w=220, h=78;
-    restoreBg(x, y, w, h);
-    boxRound(x, y, w, h, 12, COL_CYAN);
+  // ---- Geburtstagsbox unten (Heute + Nächster) UNTEREINANDER
+if (today != c_bdayToday || nextN != c_bdayNextName || nextD != c_bdayNextDate) {
+  int x=10, y=210, w=220, h=90;
+  restoreBg(x, y, w, h);
+  boxRound(x, y, w, h, 12, COL_CYAN);
 
-    // Links: Heute
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextFont(2);
-    tft.setTextColor(TFT_WHITE);
-    tft.drawString("Geburtstag heute", x+10, y+8);
+  // Labels links
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_WHITE);
 
-    tft.setTextColor(COL_CYAN);
-    tft.drawString(today, x+10, y+30);
+  tft.drawString("Heute Geburtstag", x+12, y+8);
+  tft.drawString("Naechster Geburtstag", x+12, y+48);
 
-    // Rechts: Nächster
-    tft.setTextDatum(TR_DATUM);
-    tft.setTextColor(TFT_WHITE);
-    tft.drawString("Naechster", x+w-10, y+8);
+  // Werte (Namen) mit Platz
+  tft.setTextColor(COL_CYAN);
 
-    tft.setTextColor(COL_CYAN);
-    tft.drawString(nextN, x+w-10, y+30);
+  // Heute Name (groesser)
+  tft.setTextFont(4);
+  tft.drawString(today, x+12, y+22);
 
-    tft.setTextColor(TFT_WHITE);
-    tft.drawString(nextD, x+w-10, y+50);
+  // Naechster Name (kleiner, damit es passt)
+  tft.setTextFont(2);
+  tft.drawString(nextN, x+12, y+64);
 
-    c_bdayToday = today;
-    c_bdayNextName = nextN;
-    c_bdayNextDate = nextD;
+  // Naechstes Datum rechts unten
+  tft.setTextDatum(TR_DATUM);
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString(nextD, x+w-12, y+64);
+
+  c_bdayToday = today;
+  c_bdayNextName = nextN;
+  c_bdayNextDate = nextD;
   }
 }
 
+
 void overlayPage2(){
 
-  float inT = dht.readTemperature();
-  float inHf = dht.readHumidity();
-  int inH = isnan(inHf) ? -1 : (int)round(inHf);
+  // DHT nur alle 10s lesen (DHT11 schwankt sonst ständig)
+  if (millis() - lastDhtRead > 10000) {
+    lastDhtRead = millis();
+
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+
+    if (!isnan(t) && !isnan(h)) {
+      liveInT = t;
+      liveInH = (int)round(h);
+    }
+  }
+
+  float inT = liveInT;
+  int   inH = liveInH;
 
   float outT = p2.outT;
   int   outH = p2.outH;
@@ -438,10 +464,13 @@ void overlayPage2(){
   // ===== TOP BEREICH =====
   bool needTop = false;
 
-  if (!isnan(inT) && (isnan(c_inT) || fabs(inT-c_inT) > 0.1)) needTop = true;
-  if (inH != c_inH) needTop = true;
-  if (!isnan(outT) && (isnan(c_outT) || fabs(outT-c_outT) > 0.1)) needTop = true;
-  if (outH != c_outH) needTop = true;
+  int inTi  = (!isnan(inT))  ? (int)round(inT)  : 9999;
+  int outTi = (!isnan(outT)) ? (int)round(outT) : 9999;
+
+  if (inTi != c_inTi)   needTop = true;
+  if (inH  != c_inH)    needTop = true;
+  if (outTi != c_outTi) needTop = true;
+  if (outH  != c_outH)  needTop = true;
 
   if (needTop){
     restoreBg(0, 0, 240, 100);
@@ -457,6 +486,7 @@ void overlayPage2(){
     if (!isnan(inT))
       tft.drawString(String((int)round(inT)) + "°C", 10, 35);
 
+    tft.setTextFont(2);
     if (inH >= 0)
       tft.drawString(String(inH) + "%", 10, 65);
 
@@ -469,13 +499,14 @@ void overlayPage2(){
     if (!isnan(outT))
       tft.drawString(String((int)round(outT)) + "°C", 230, 35);
 
+    tft.setTextFont(2);
     if (outH >= 0)
       tft.drawString(String(outH) + "%", 230, 65);
 
-    c_inT = inT; 
-    c_inH = inH;
-    c_outT = outT; 
-    c_outH = outH;
+    c_inTi  = inTi;
+    c_inH   = inH;
+    c_outTi = outTi;
+    c_outH  = outH;
   }
 
   // ===== MITTE =====
@@ -485,29 +516,60 @@ void overlayPage2(){
   if (netCond != c_netCond) needMid = true;
 
   if (needMid){
-    restoreBg(0, 100, 240, 110);
+  restoreBg(0, 100, 240, 110);
 
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextFont(7);
-    tft.setTextColor(TFT_WHITE);
+  int cx = 120;
+  int cy = 125;
 
-    if (!isnan(netT))
-      tft.drawString(String((int)round(netT)) + "°C", 120, 150);
-
-    tft.setTextFont(4);
-
-    String label =
-      (netCond=="sunny") ? "Sonnig" :
-      (netCond=="cloudy") ? "Wolkig" :
-      (netCond=="rain") ? "Regen" :
-      (netCond=="snow") ? "Schnee" :
-      "-";
-
-    tft.drawString(label, 120, 190);
-
-    c_netT = netT;
-    c_netCond = netCond;
+  // ===== Wetter Icon =====
+  if (netCond == "sunny") {
+    tft.fillCircle(cx, cy, 18, TFT_YELLOW);
+    for (int i=0;i<8;i++){
+      float a = i * 3.14159 / 4.0;
+      int x1 = cx + cos(a)*24;
+      int y1 = cy + sin(a)*24;
+      int x2 = cx + cos(a)*32;
+      int y2 = cy + sin(a)*32;
+      tft.drawLine(x1,y1,x2,y2,TFT_YELLOW);
+    }
   }
+  else if (netCond == "cloudy") {
+    tft.fillCircle(cx-10, cy, 14, TFT_LIGHTGREY);
+    tft.fillCircle(cx+5,  cy-5, 16, TFT_LIGHTGREY);
+    tft.fillRect(cx-18, cy, 36, 16, TFT_LIGHTGREY);
+  }
+  else if (netCond == "rain") {
+    tft.fillCircle(cx-10, cy, 14, TFT_LIGHTGREY);
+    tft.fillCircle(cx+5,  cy-5, 16, TFT_LIGHTGREY);
+    tft.fillRect(cx-18, cy, 36, 16, TFT_LIGHTGREY);
+    for (int i=-10;i<=10;i+=10){
+      tft.drawLine(cx+i, cy+20, cx+i-4, cy+28, TFT_CYAN);
+    }
+  }
+
+  // ===== Temperatur =====
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(7);
+  tft.setTextColor(TFT_WHITE);
+
+  if (!isnan(netT))
+    tft.drawString(String((int)round(netT)) + "°C", 120, 170);
+
+  // ===== Text =====
+  tft.setTextFont(4);
+
+  String label =
+    (netCond=="sunny") ? "Sonnig" :
+    (netCond=="cloudy") ? "Wolkig" :
+    (netCond=="rain") ? "Regen" :
+    (netCond=="snow") ? "Schnee" :
+    "-";
+
+  tft.drawString(label, 120, 205);
+
+  c_netT = netT;
+  c_netCond = netCond;
+}
 }
 
 
