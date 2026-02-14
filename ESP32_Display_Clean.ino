@@ -435,6 +435,28 @@ if (today != c_bdayToday || nextN != c_bdayNextName || nextD != c_bdayNextDate) 
   c_bdayNextDate = nextD;
   }
 }
+void drawMiniIcon(int cx, int cy, const String& cond){
+  if (cond == "sunny") {
+    tft.fillCircle(cx, cy, 6, TFT_YELLOW);
+  }
+  else if (cond == "cloudy") {
+    tft.fillCircle(cx-4, cy, 5, TFT_LIGHTGREY);
+    tft.fillCircle(cx+3, cy-2, 6, TFT_LIGHTGREY);
+    tft.fillRect(cx-9, cy, 18, 7, TFT_LIGHTGREY);
+  }
+  else if (cond == "rain") {
+    tft.fillCircle(cx-4, cy, 5, TFT_LIGHTGREY);
+    tft.fillCircle(cx+3, cy-2, 6, TFT_LIGHTGREY);
+    tft.fillRect(cx-9, cy, 18, 7, TFT_LIGHTGREY);
+    tft.drawLine(cx-4, cy+9, cx-6, cy+12, TFT_CYAN);
+    tft.drawLine(cx+0, cy+9, cx-2, cy+12, TFT_CYAN);
+    tft.drawLine(cx+4, cy+9, cx+2, cy+12, TFT_CYAN);
+  }
+  else if (cond == "snow") {
+    tft.drawLine(cx-5, cy, cx+5, cy, TFT_WHITE);
+    tft.drawLine(cx, cy-5, cx, cy+5, TFT_WHITE);
+  }
+}
 
 
 void overlayPage2(){
@@ -570,6 +592,47 @@ void overlayPage2(){
   c_netT = netT;
   c_netCond = netCond;
 }
+
+// ===== FORECAST =====
+  bool needFc = false;
+
+  String newSig = "";
+  for (int i=0;i<5;i++){
+    newSig += p2.fc[i].d;
+    newSig += String(p2.fc[i].hi);
+    newSig += String(p2.fc[i].lo);
+  }
+
+  if (newSig != c_fcSig) needFc = true;
+
+  if (needFc){
+    restoreBg(0, 230, 240, 90);
+
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(TFT_WHITE);
+
+    for (int i=0;i<5;i++){
+  int col = 24 + i*48;
+
+  // Mini Icon über dem Tag
+  drawMiniIcon(col, 232, p2.fc[i].cond);
+
+  // Wochentag
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString(p2.fc[i].d, col, 238);
+
+  // High Temperatur
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString(String(p2.fc[i].hi) + "°", col, 256);
+
+  // Low Temperatur
+  tft.setTextColor(COL_CYAN);
+  tft.drawString(String(p2.fc[i].lo) + "°", col, 274);
+}
+
+    c_fcSig = newSig;
+  }
 }
 
 
