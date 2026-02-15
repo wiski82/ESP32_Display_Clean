@@ -5,6 +5,7 @@
 #include <TFT_eSPI.h>
 #include <SPI.h>
 #include <SD.h>
+#include <math.h>
 
 // =====================
 // WLAN / MQTT
@@ -435,28 +436,111 @@ if (today != c_bdayToday || nextN != c_bdayNextName || nextD != c_bdayNextDate) 
   c_bdayNextDate = nextD;
   }
 }
+
+// ===========================
+// PAGE 2 - NICE WEATHER ICONS
+// ===========================
+
+void drawCloud(int cx, int cy, int w, int h, uint16_t fill, uint16_t outline) {
+  int x = cx - w/2;
+  int y = cy - h/2;
+
+  int baseH = (h * 45) / 100;      // ~0.45h
+  int baseY = y + h - baseH;
+
+  // Outline (optional)
+  if (outline != fill) {
+    tft.fillRoundRect(x, baseY, w, baseH, baseH/2, outline);
+    tft.fillCircle(x + (w*30)/100, y + (h*55)/100, (h*30)/100 + 2, outline);
+    tft.fillCircle(x + (w*48)/100, y + (h*40)/100, (h*36)/100 + 2, outline);
+    tft.fillCircle(x + (w*68)/100, y + (h*55)/100, (h*30)/100 + 2, outline);
+  }
+
+  // Fill
+  tft.fillRoundRect(x+1, baseY+1, w-2, baseH-2, (baseH/2)-1, fill);
+  tft.fillCircle(x + (w*30)/100, y + (h*55)/100, (h*30)/100, fill);
+  tft.fillCircle(x + (w*48)/100, y + (h*40)/100, (h*36)/100, fill);
+  tft.fillCircle(x + (w*68)/100, y + (h*55)/100, (h*30)/100, fill);
+}
+
 void drawMiniIcon(int cx, int cy, const String& cond){
+  uint16_t cloudFill = tft.color565(220,230,240);
+  uint16_t cloudOut  = tft.color565(170,185,200);
+
   if (cond == "sunny") {
-    tft.fillCircle(cx, cy, 6, TFT_YELLOW);
+    // kleine Sonne
+    uint16_t s = tft.color565(255, 210, 80);
+    tft.fillCircle(cx, cy, 6, s);
+    for (int a = 0; a < 360; a += 60) {
+      float rad = a * 0.0174533f;
+      int x1 = cx + (int)(cos(rad)*9);
+      int y1 = cy + (int)(sin(rad)*9);
+      int x2 = cx + (int)(cos(rad)*12);
+      int y2 = cy + (int)(sin(rad)*12);
+      tft.drawLine(x1,y1,x2,y2,s);
+    }
   }
   else if (cond == "cloudy") {
-    tft.fillCircle(cx-4, cy, 5, TFT_LIGHTGREY);
-    tft.fillCircle(cx+3, cy-2, 6, TFT_LIGHTGREY);
-    tft.fillRect(cx-9, cy, 18, 7, TFT_LIGHTGREY);
+    drawCloud(cx, cy, 24, 18, cloudFill, cloudOut);
   }
   else if (cond == "rain") {
-    tft.fillCircle(cx-4, cy, 5, TFT_LIGHTGREY);
-    tft.fillCircle(cx+3, cy-2, 6, TFT_LIGHTGREY);
-    tft.fillRect(cx-9, cy, 18, 7, TFT_LIGHTGREY);
-    tft.drawLine(cx-4, cy+9, cx-6, cy+12, TFT_CYAN);
-    tft.drawLine(cx+0, cy+9, cx-2, cy+12, TFT_CYAN);
-    tft.drawLine(cx+4, cy+9, cx+2, cy+12, TFT_CYAN);
+    drawCloud(cx, cy-2, 22, 16, cloudFill, cloudOut);
+    uint16_t r = tft.color565(120, 170, 230);
+    for (int i = -8; i <= 8; i += 6) {
+      tft.drawLine(cx+i, cy+10, cx+i-2, cy+16, r);
+    }
   }
   else if (cond == "snow") {
-    tft.drawLine(cx-5, cy, cx+5, cy, TFT_WHITE);
-    tft.drawLine(cx, cy-5, cx, cy+5, TFT_WHITE);
+    drawCloud(cx, cy-2, 22, 16, cloudFill, cloudOut);
+    uint16_t sn = tft.color565(230, 245, 255);
+    tft.fillCircle(cx-6, cy+12, 1, sn);
+    tft.fillCircle(cx,   cy+15, 1, sn);
+    tft.fillCircle(cx+6, cy+12, 1, sn);
+  }
+  else {
+    drawCloud(cx, cy, 24, 18, cloudFill, cloudOut);
   }
 }
+
+void drawMainCondIcon(const String& cond, int cx, int cy) {
+  uint16_t cloudFill = tft.color565(220,230,240);
+  uint16_t cloudOut  = tft.color565(150,170,190);
+
+  if (cond == "sunny") {
+    uint16_t s = tft.color565(255, 210, 80);
+    tft.fillCircle(cx-20, cy-18, 14, s);
+    for (int a = 0; a < 360; a += 30) {
+      float rad = a * 0.0174533f;
+      int x1 = (cx-20) + (int)(cos(rad)*18);
+      int y1 = (cy-18) + (int)(sin(rad)*18);
+      int x2 = (cx-20) + (int)(cos(rad)*24);
+      int y2 = (cy-18) + (int)(sin(rad)*24);
+      tft.drawLine(x1,y1,x2,y2,s);
+    }
+    drawCloud(cx+6, cy-2, 76, 50, cloudFill, cloudOut);
+  }
+  else if (cond == "cloudy") {
+    drawCloud(cx, cy-2, 76, 50, cloudFill, cloudOut);
+  }
+  else if (cond == "rain") {
+    drawCloud(cx, cy-6, 74, 48, cloudFill, cloudOut);
+    uint16_t r = tft.color565(120, 170, 230);
+    for (int i = -24; i <= 24; i += 10) {
+      tft.drawLine(cx+i, cy+22, cx+i-3, cy+38, r);
+    }
+  }
+  else if (cond == "snow") {
+    drawCloud(cx, cy-6, 74, 48, cloudFill, cloudOut);
+    uint16_t sn = tft.color565(230, 245, 255);
+    for (int i = -18; i <= 18; i += 9) {
+      tft.fillCircle(cx+i, cy+28, 2, sn);
+    }
+  }
+  else {
+    drawCloud(cx, cy-2, 76, 50, cloudFill, cloudOut);
+  }
+}
+
 
 
 void overlayPage2(){
@@ -541,33 +625,11 @@ void overlayPage2(){
   restoreBg(0, 100, 240, 110);
 
   int cx = 120;
-  int cy = 125;
+  int cy = 115;
 
   // ===== Wetter Icon =====
-  if (netCond == "sunny") {
-    tft.fillCircle(cx, cy, 18, TFT_YELLOW);
-    for (int i=0;i<8;i++){
-      float a = i * 3.14159 / 4.0;
-      int x1 = cx + cos(a)*24;
-      int y1 = cy + sin(a)*24;
-      int x2 = cx + cos(a)*32;
-      int y2 = cy + sin(a)*32;
-      tft.drawLine(x1,y1,x2,y2,TFT_YELLOW);
-    }
-  }
-  else if (netCond == "cloudy") {
-    tft.fillCircle(cx-10, cy, 14, TFT_LIGHTGREY);
-    tft.fillCircle(cx+5,  cy-5, 16, TFT_LIGHTGREY);
-    tft.fillRect(cx-18, cy, 36, 16, TFT_LIGHTGREY);
-  }
-  else if (netCond == "rain") {
-    tft.fillCircle(cx-10, cy, 14, TFT_LIGHTGREY);
-    tft.fillCircle(cx+5,  cy-5, 16, TFT_LIGHTGREY);
-    tft.fillRect(cx-18, cy, 36, 16, TFT_LIGHTGREY);
-    for (int i=-10;i<=10;i+=10){
-      tft.drawLine(cx+i, cy+20, cx+i-4, cy+28, TFT_CYAN);
-    }
-  }
+  drawMainCondIcon(netCond, cx, cy);
+
 
   // ===== Temperatur =====
   tft.setTextDatum(MC_DATUM);
@@ -575,7 +637,7 @@ void overlayPage2(){
   tft.setTextColor(TFT_WHITE);
 
   if (!isnan(netT))
-    tft.drawString(String((int)round(netT)) + "°C", 120, 170);
+    tft.drawString(String((int)round(netT)) + "°C", 120, 162);
 
   // ===== Text =====
   tft.setTextFont(4);
@@ -615,20 +677,20 @@ void overlayPage2(){
     for (int i=0;i<5;i++){
   int col = 24 + i*48;
 
-  // Mini Icon über dem Tag
-  drawMiniIcon(col, 232, p2.fc[i].cond);
+  /// Icon tiefer, damit es den Wochentag nicht verdeckt
+  drawMiniIcon(col, 252, p2.fc[i].cond);
 
-  // Wochentag
+  // Wochentag danach zeichnen -> bleibt immer sichtbar
   tft.setTextColor(TFT_WHITE);
-  tft.drawString(p2.fc[i].d, col, 238);
+  tft.drawString(p2.fc[i].d, col, 232);
 
-  // High Temperatur
+  // High Temperatur (etwas tiefer)
   tft.setTextColor(TFT_WHITE);
-  tft.drawString(String(p2.fc[i].hi) + "°", col, 256);
+  tft.drawString(String(p2.fc[i].hi) + "°", col, 268);
 
-  // Low Temperatur
+  // Low Temperatur (etwas tiefer)
   tft.setTextColor(COL_CYAN);
-  tft.drawString(String(p2.fc[i].lo) + "°", col, 274);
+  tft.drawString(String(p2.fc[i].lo) + "°", col, 286);
 }
 
     c_fcSig = newSig;
