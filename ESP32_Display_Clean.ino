@@ -20,6 +20,8 @@ const char* mqtt_pass   = "";
 
 // Topics
 const char* TOPIC_UI = "display/ui";
+const char* TOPIC_HOMECONNECT = "display/homeconnect";
+
 
 // Innen-Sensor (DHT11 am Display)
 #define DHTPIN  27
@@ -100,6 +102,28 @@ struct Page2Data {
   } fc[5];
 } p2;
 
+// =====================
+// PAGE 3 Data (HomeConnect)
+// =====================
+struct HCItem {
+  String name = "-";
+  String prog = "-";     // Backofen Programm (optional)
+  int    temp = -1;      // Backofen Temperatur (optional)
+  int    p = 0;          // progress 0..100
+  String end = "unavailable"; // raw end string (ISO oder unavailable)
+  String state = "unknown";
+};
+
+struct Page3Data {
+  HCItem ov; // Backofen
+  HCItem dw; // Spuelmaschine
+  HCItem wm; // Waschmaschine
+  HCItem td; // Trockner
+} p3;
+
+// Cache-Signatur gegen Flackern
+String c_hcSig = "";
+
 // Caches Page2 (nur neu zeichnen wenn geändert)
 float  c_inT = NAN; int c_inH = -1;
 float  c_outT = NAN; int c_outH = -1;
@@ -125,6 +149,20 @@ static inline bool isBad(const String& s){
 }
 static inline String safe(const String& s, const char* fb="-"){
   return isBad(s) ? String(fb) : s;
+}
+static inline String endToHHMM(const String& s){
+  String v = s;
+  v.trim();
+  if (isBad(v)) return "--:--";
+  // wenn ISO: 2026-02-15T13:22:13+00:00 -> nimm 13:22
+  int tPos = v.indexOf('T');
+  if (tPos >= 0 && v.length() >= tPos + 6) {
+    String hhmm = v.substring(tPos + 1, tPos + 6);
+    if (hhmm.length() == 5) return hhmm;
+  }
+  // wenn schon HH:MM
+  if (v.length() >= 5 && v[2] == ':') return v.substring(0,5);
+  return v;
 }
 
 // Cyan-Farbe wie bisher
@@ -273,19 +311,43 @@ void parsePage2(JsonObject p){
   }
 }
 
+// =====================
+// PAGE 3 parse (HomeConnect)
+// =====================
+static inline int clampi(int v, int lo, int hi){ return v<lo?lo:(v>hi?hi:v); }
+
+void parseHomeConnect(JsonObject hc){
+  auto parseDev = [&](const char* key, HCItem &d){
+    if (!hc.containsKey(key) || !hc[key].is<JsonObject>()) return;
+    JsonObject o = hc[key].as<JsonObject>();
+
+    if (o.containsKey("name"))  d.name  = safe(String((const char*)o["name"]), "-");
+    if (o.containsKey("prog"))  d.prog  = safe(String((const char*)o["prog"]), "-");
+    if (o.containsKey("temp") && !o["temp"].isNull()) d.temp = o["temp"].as<int>();
+
+    if (o.containsKey("p") && !o["p"].isNull()) d.p = clampi(o["p"].as<int>(), 0, 100);
+    if (o.containsKey("end"))   d.end   = safe(String((const char*)o["end"]), "unavailable");
+    if (o.containsKey("state")) d.state = safe(String((const char*)o["state"]), "unknown");
+  };
+
+  parseDev("ov", p3.ov);
+  parseDev("dw", p3.dw);
+  parseDev("wm", p3.wm);
+  parseDev("td", p3.td);
+}
+
+
 void mqttCallback(char* topic, byte* payload, unsigned int length){
   Serial.println("=== MQTT MESSAGE RECEIVED ===");
   Serial.printf("Topic: %s\n", topic);
   Serial.printf("Length: %u\n", length);
   Serial.print("Payload: ");
-for (unsigned int i = 0; i < length; i++) {
-  Serial.print((char)payload[i]);
-}
-Serial.println();
+  for (unsigned int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
 
   String t(topic);
-  String msg; msg.reserve(length+1);
-  for(unsigned int i=0;i<length;i++) msg += (char)payload[i];
 
   StaticJsonDocument<8192> doc;
   DeserializationError err = deserializeJson(doc, payload, length);
@@ -294,7 +356,20 @@ Serial.println();
     return;
   }
 
-  if (t == TOPIC_UI) parseUI(doc);
+  // ===== Seite 1 + 2 =====
+  if (t == TOPIC_UI) {
+    parseUI(doc);
+    return;
+  }
+
+  // ===== Seite 3 =====
+  if (t == TOPIC_HOMECONNECT) {
+    JsonObject root = doc.as<JsonObject>();
+    if (root.containsKey("hc") && root["hc"].is<JsonObject>()) {
+      parseHomeConnect(root["hc"].as<JsonObject>());
+    }
+    return;
+  }
 }
 
 // =====================
@@ -326,8 +401,14 @@ void mqttReconnect(){
 
     if (client.connect(cid.c_str(), mqtt_user, mqtt_pass)) {
       Serial.println("[MQTT] connected");
+      
       client.subscribe(TOPIC_UI);
       Serial.printf("[MQTT] subscribed: %s\n", TOPIC_UI);
+
+      client.subscribe(TOPIC_HOMECONNECT);
+      Serial.printf("[MQTT] subscribed: %s\n", TOPIC_HOMECONNECT);
+
+      
     } else {
       Serial.printf("[MQTT] fail rc=%d\n", (int)client.state());
       delay(1200);
@@ -346,6 +427,7 @@ void resetCaches(){
   c_outT = NAN; c_outH = -1;
   c_netT = NAN; c_netCond = "";
   c_fcSig = "";
+  c_hcSig = "";   // PAGE3: HomeConnect neu zeichnen erzwingen
 }
 
 void showPage(Page p){
@@ -697,6 +779,128 @@ void overlayPage2(){
   }
 }
 
+// ============================================================
+// PAGE 3 - HOMECONNECT UI
+// - Rahmenfarbe = Status (grün läuft / blau aus / orange fertig)
+// - Untere Linie = Progress-Bar (0-100%)
+// - Backofen: Programm + Temperatur
+// - DW/WM/TD: Prozent + Endzeit (HH:MM)
+// ============================================================
+
+// ---------- Status -> Farbe ----------
+uint16_t colorForState(const String& s, int p){
+  String v = s; v.toLowerCase(); v.trim();
+
+  // --- aus / inaktiv (WICHTIG: vor "active", weil "inactive" sonst "active" matched)
+  if (v.indexOf("inactive")>=0 || v.indexOf("off")>=0 || v.indexOf("idle")>=0 ||
+      v.indexOf("unavailable")>=0 || v.indexOf("unknown")>=0) {
+    return tft.color565(0,140,255); // BLAU
+  }
+
+  // --- fertig
+  if (p >= 100 || v.indexOf("finish")>=0 || v.indexOf("fertig")>=0 || v.indexOf("done")>=0) {
+    return tft.color565(255,140,0); // ORANGE
+  }
+
+  // --- läuft (hier ohne "active", damit es keine false positives gibt)
+  if (v.indexOf("run")>=0 || v.indexOf("lauf")>=0 || v.indexOf("on")>=0 ||
+      (p > 0 && p < 100)) {
+    return tft.color565(0,200,90);  // GRÜN
+  }
+
+  return tft.color565(0,140,255);   // default BLAU
+}
+
+// ---------- Eine Kachel zeichnen ----------
+void drawDeviceTile(int x,int y,int w,int h, const HCItem& d, bool isOven){
+  uint16_t col = colorForState(d.state, d.p);
+
+  // Hintergrund wiederherstellen (RAW) -> kein "verschmieren"
+  restoreBg(x, y, w, h);
+
+  // Rahmen (Statusfarbe)
+  tft.drawRoundRect(x, y, w, h, 12, col);
+  tft.drawRoundRect(x+1, y+1, w-2, h-2, 11, col);
+
+  // ===== Progress = untere Rahmenlinie =====
+int lineX = x + 10;
+int lineW = w - 20;
+int lineY = y + h - 2;
+
+// graue Basislinie
+uint16_t base = tft.color565(60,60,60);
+tft.drawFastHLine(lineX, lineY,   lineW, base);
+tft.drawFastHLine(lineX, lineY-1, lineW, base);
+
+// farbiger Progress
+int fillW = (lineW * clampi(d.p,0,100)) / 100;
+if (fillW > 0) {
+  tft.drawFastHLine(lineX, lineY,   fillW, col);
+  tft.drawFastHLine(lineX, lineY-1, fillW, col);
+}
+
+  // Gerätename oben links
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString(d.name, x+10, y+8);
+
+  // Inhalt je nach Gerät
+  if (isOven){
+    // Backofen: Programm + Temperatur
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(TFT_WHITE);
+    tft.drawString(safe(d.prog,"-"), x + w/2, y + h/2 - 6);
+
+    tft.setTextFont(4);
+    tft.setTextColor(COL_CYAN);
+    String tt = (d.temp >= 0) ? (String(d.temp) + "°C") : String("--°C");
+    tft.drawString(tt, x + w/2, y + h/2 + 18);
+
+  } else {
+    // DW/WM/TD: Prozent + Endzeit
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(COL_CYAN);
+    tft.drawString(String(clampi(d.p,0,100)) + "%", x+w-10, y+8);
+    
+    tft.setTextDatum(BR_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(TFT_WHITE);
+    tft.drawString(endToHHMM(d.end), x+w-10, y+h-10);
+  }
+}
+
+// ---------- Page 3 Overlay ----------
+void overlayPage3(){
+
+  // Signatur: nur neu zeichnen, wenn sich Daten ändern (weniger Flackern)
+  String sig = p3.ov.prog + String(p3.ov.temp) + String(p3.ov.p) + p3.ov.end + p3.ov.state
+             + p3.dw.state + String(p3.dw.p) + p3.dw.end
+             + p3.wm.state + String(p3.wm.p) + p3.wm.end
+             + p3.td.state + String(p3.td.p) + p3.td.end;
+
+  if (sig == c_hcSig) return;
+  c_hcSig = sig;   // PAGE3: neue Signatur merken
+
+  // Header oben
+  restoreBg(0, 0, 240, 36);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(4);
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString("HomeConnect", 120, 18);
+
+  // Kacheln (passen auf 240x320)
+  drawDeviceTile(10, 40, 220, 86, p3.ov, true);    // Backofen
+  drawDeviceTile(10, 132, 220, 58, p3.dw, false);  // Spülmaschine
+  drawDeviceTile(10, 196, 220, 58, p3.wm, false);  // Waschmaschine
+  drawDeviceTile(10, 260, 220, 50, p3.td, false);  // Trockner
+}
+
+
+
+
 
 // =====================
 // Setup / Loop
@@ -762,6 +966,8 @@ void loop() {
     lastOverlayTick = millis();
     if (currentPage==PAGE1) overlayPage1();
     if (currentPage==PAGE2) overlayPage2();
+    if (currentPage==PAGE3) overlayPage3();
+
     // PAGE2 / PAGE3 Overlays kommen als nächste Steps
   }
 }
